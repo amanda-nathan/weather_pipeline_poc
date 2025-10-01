@@ -1,0 +1,10 @@
+
+dagster>=1.7,<1.9
+dagster-webserver>=1.7,<1.9
+snowflake-connector-python[pandas]>=3.7
+snowflake-sqlalchemy>=1.6
+SQLAlchemy>=2.0
+pandas>=2.0
+requests>=2.31
+cryptography>=42
+toml>=0.10

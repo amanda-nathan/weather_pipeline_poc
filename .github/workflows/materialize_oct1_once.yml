@@ -1,0 +1,33 @@
+
+name: Materialize Oct1 Once
+
+on:
+  schedule:
+    - cron: "0 15 1 10 *"
+
+jobs:
+  run:
+    runs-on: ubuntu-latest
+    steps:
+      - name: Check date
+        run: |
+          if [ "$(date -u +%F)" != "2025-10-01" ]; then
+            exit 0
+          fi
+      - uses: actions/checkout@v4
+      - uses: actions/setup-python@v5
+        with:
+          python-version: "3.11"
+      - run: |
+          python -m venv .venv
+          source .venv/bin/activate
+          pip install --upgrade pip
+          pip install -r requirements.txt
+      - env:
+          SNOWFLAKE_ACCOUNT: ${{ secrets.SNOWFLAKE_ACCOUNT }}
+          SNOWFLAKE_USER: ${{ secrets.SNOWFLAKE_USER }}
+          SNOWFLAKE_PRIVATE_KEY_B64: ${{ secrets.SNOWFLAKE_PRIVATE_KEY_B64 }}
+          SNOWFLAKE_PRIVATE_KEY_PASSPHRASE: ${{ secrets.SNOWFLAKE_PRIVATE_KEY_PASSPHRASE }}
+        run: |
+          source .venv/bin/activate
+          dagster asset materialize -m weather_pipeline --select raw_boston_weather
