@@ -1,29 +1,33 @@
-
+# yaml-language-server: $schema=https://json.schemastore.org/github-workflow.json
 name: Materialize Oct1 Once
 
 on:
   schedule:
     - cron: "0 15 1 10 *"
+  workflow_dispatch: {}
 
 jobs:
   run:
     runs-on: ubuntu-latest
     steps:
-      - name: Check date
+      - name: Check date is 2025-10-01 UTC
         run: |
           if [ "$(date -u +%F)" != "2025-10-01" ]; then
+            echo "Skipping: not 2025-10-01 UTC"
             exit 0
           fi
       - uses: actions/checkout@v4
       - uses: actions/setup-python@v5
         with:
           python-version: "3.11"
-      - run: |
+      - name: Install deps
+        run: |
           python -m venv .venv
           source .venv/bin/activate
           pip install --upgrade pip
           pip install -r requirements.txt
-      - env:
+      - name: Materialize asset
+        env:
           SNOWFLAKE_ACCOUNT: ${{ secrets.SNOWFLAKE_ACCOUNT }}
           SNOWFLAKE_USER: ${{ secrets.SNOWFLAKE_USER }}
           SNOWFLAKE_PRIVATE_KEY_B64: ${{ secrets.SNOWFLAKE_PRIVATE_KEY_B64 }}
