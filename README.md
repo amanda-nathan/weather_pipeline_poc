@@ -1,44 +1,47 @@
 
 # Weather Pipeline (Dagster + Snowflake) — Proof of Concept
 
-This repository demonstrates a simple, reusable pipeline that fetches daily weather data from the [Open-Meteo API](https://open-meteo.com/) and loads it into Snowflake using [Dagster](https://dagster.io/). It is designed as a **proof of concept**: anyone with their own Snowflake instance and key-pair authentication can run it.
+This repository demonstrates a simple, reusable pipeline that fetches **today’s daily weather forecast** from the [Open-Meteo API](https://open-meteo.com/) and loads it into Snowflake using [Dagster](https://dagster.io/).
 
-## What it does
+It is designed as a **proof of concept** that anyone can run in their own Snowflake account using key‑pair authentication.
 
-- Pulls a daily weather forecast for a configurable latitude/longitude.  
-  *(By default, it points to Boston, MA near my favorite [café in Roslindale](https://www.google.com/search?q=square+root+roslindale+latitude+and+longitude))*  
-- Loads the forecast into a Snowflake table (default: `RAW.RAW_WEATHER_FORECAST`).  
-- Runs locally with a Dagster schedule, or automatically via GitHub Actions CI/CD.  
+---
+
+## What it does (now)
+
+- Pulls the **current day’s forecast** for a configurable latitude/longitude.
+- Converts temperature values to **°Fahrenheit**.
+- Upserts **exactly one row per day** into a Snowflake table (default: `RAW.WEATHER_TODAY`).  
+- Adds a `LOAD_TS_UTC` timestamp showing when the row was loaded.
+- Can run locally or on a schedule via GitHub Actions.
+
+> Note: This pipeline ingests **forecasted** values (not real-time observations). For example, `TEMP_MAX_F` is today’s forecasted high temperature in °F.
 
 ---
 
 ## Quickstart (GitHub Actions)
 
-1. **Fork this repo** to your own GitHub account.  
+1. **Fork this repo** to your GitHub account.  
 2. **Add Snowflake credentials** as repo secrets:  
    - `SNOWFLAKE_ACCOUNT`  
    - `SNOWFLAKE_USER`  
    - `SNOWFLAKE_PRIVATE_KEY_B64`  
-   - optional: `SNOWFLAKE_PRIVATE_KEY_PASSPHRASE`  
-3. **Wait for the schedule** — the pipeline will run automatically at the configured times, loading data into your Snowflake table.
+   - (optional) `SNOWFLAKE_PRIVATE_KEY_PASSPHRASE`  
+3. The scheduled workflow will run and append one row each day.
 
 ---
 
 ## Configure
 
-### Weather settings (environment variables)
-You can override defaults by setting these variables:
+### Weather parameters (env overrides)
 - `WEATHER_LAT` (default `42.3601`)
 - `WEATHER_LON` (default `-71.0589`)
 - `WEATHER_TZ` (default `America/New_York`)
 - `WEATHER_SCHEMA` (default `RAW`)
-- `WEATHER_TABLE` (default `RAW_WEATHER_FORECAST`)
+- `WEATHER_TABLE` (default `WEATHER_TODAY`)  ← updated default
 
 ### Snowflake credentials
-Two options are supported:
-
-**1. Local development (TOML file)**  
-Create `~/.snowflake/connections.toml`:
+**Local (`~/.snowflake/connections.toml`)**
 ```toml
 [DEFAULT_CONNECTION]
 account = "YOUR_ACCOUNT"
@@ -46,16 +49,15 @@ user = "YOUR_USER"
 private_key_path = "/absolute/path/to/your_key.pem"
 ```
 
-**2. CI/CD (GitHub Actions secrets)**  
-Add these secrets in your repo settings:
+**GitHub Actions (secrets)**
 - `SNOWFLAKE_ACCOUNT`
 - `SNOWFLAKE_USER`
-- `SNOWFLAKE_PRIVATE_KEY_B64` (your PEM file base64-encoded)
-- `SNOWFLAKE_PRIVATE_KEY_PASSPHRASE` *(optional, only if your PEM is encrypted)*
+- `SNOWFLAKE_PRIVATE_KEY_B64`
+- (optional) `SNOWFLAKE_PRIVATE_KEY_PASSPHRASE`
 
 ---
 
-## Install
+## Install locally
 
 ```bash
 python -m venv .venv
@@ -77,7 +79,7 @@ Terminal B:
 dagster-daemon run
 ```
 
-One-off run:
+One‑off materialization:
 ```bash
 dagster asset materialize -m weather_pipeline --select raw_boston_weather
 ```
@@ -86,28 +88,33 @@ dagster asset materialize -m weather_pipeline --select raw_boston_weather
 
 ## CI/CD (GitHub Actions)
 
-This repo includes two workflows:
+- `.github/workflows/materialize_oct1_once.yml` — one-off trigger at a specific time.
+- `.github/workflows/materialize_daily.yml` — runs daily on a UTC schedule.
 
-- `.github/workflows/materialize_oct1_once.yml`  
-  Runs **once** at 11:00 AM ET on Oct 1, 2025.
+Each job installs dependencies and runs:
+```bash
+dagster asset materialize -m weather_pipeline --select raw_boston_weather
+```
 
-- `.github/workflows/materialize_daily.yml`  
-  Runs **every day at 11:00 UTC** (~7:00 AM ET while DST is active).  
-  Update to `12:00 UTC` after DST ends if you want to stay aligned with 7:00 AM local time.
+---
 
-Each workflow:
-1. Installs dependencies.  
-2. Runs the Dagster job:  
-   ```bash
-   dagster asset materialize -m weather_pipeline --select raw_boston_weather
-   ```
+## Table schema
 
-No servers are required: GitHub’s runners execute the pipeline with your Snowflake secrets.
+Default table: `RAW.WEATHER_TODAY`
+
+| Column               | Type           | Meaning                                       |
+|----------------------|----------------|-----------------------------------------------|
+| `DATE`               | `DATE`         | Local date for the forecast (in `WEATHER_TZ`) |
+| `WEATHERCODE`        | `INTEGER`      | Open‑Meteo weather code                        |
+| `TEMP_MAX_F`         | `FLOAT`        | Forecasted high temp for today (°F)           |
+| `TEMP_MIN_F`         | `FLOAT`        | Forecasted low temp for today (°F)            |
+| `PRECIPITATION_SUM`  | `FLOAT`        | Forecasted precipitation total (mm)           |
+| `LOAD_TS_UTC`        | `TIMESTAMP_TZ` | Load timestamp (UTC)                           |
 
 ---
 
 ## Notes
 
-- Obvious reminder (I hope!): Never commit private keys. 
-- You can change the target database/schema/table by editing `weather_pipeline/__init__.py` or overriding via environment variables.  
-- This project is intended as a **proof of concept** and starting point for more complex pipelines.
+- This pipeline uses **forecast** data, not live observations. Differences from your current outside reading are expected.
+- Never commit private keys. Use local secure files or GitHub Secrets.
+- Override the table/database/schema with env vars to fit your environment.
