@@ -1,11 +1,9 @@
 import os
 from datetime import datetime, timezone
 from zoneinfo import ZoneInfo
-
-import pandas as pd
 import requests
-from dagster import AssetExecutionContext, FreshnessPolicy, asset
-from sqlalchemy import text
+import pandas as pd
+from dagster import asset, AssetExecutionContext, FreshnessPolicy
 
 @asset(
     group_name="landing",
@@ -21,6 +19,7 @@ def raw_boston_weather(context: AssetExecutionContext):
     tz = os.getenv("WEATHER_TZ", "America/New_York")
     schema = os.getenv("WEATHER_SCHEMA", "RAW")
     table = os.getenv("WEATHER_TABLE", "RAW_WEATHER_FORECAST")
+    tmp = f"{table}_TMP"
 
     url = "https://api.open-meteo.com/v1/forecast"
     params = {
@@ -36,7 +35,6 @@ def raw_boston_weather(context: AssetExecutionContext):
 
     df = pd.DataFrame(d["daily"]).rename(columns={"time": "date"})
     df["date"] = pd.to_datetime(df["date"]).dt.date
-
     today = datetime.now(ZoneInfo(tz)).date()
     df = df[df["date"] == today]
     if df.empty:
@@ -51,57 +49,68 @@ def raw_boston_weather(context: AssetExecutionContext):
     precip_v = float(row["precipitation_sum"])
     load_ts_v = datetime.now(timezone.utc)
 
-    context.log.info(
-        f"Prepared row for {today}: code={weathercode_v}, tmax={tmax_v}, tmin={tmin_v}, precip={precip_v}, load_ts_utc={load_ts_v.isoformat()}"
-    )
+    context.log.info(f"Prepared row: date={date_v}, code={weathercode_v}, tmax={tmax_v}, tmin={tmin_v}, precip={precip_v}, load_ts_utc={load_ts_v.isoformat()}")
 
-    create_sql = f"""
-    CREATE TABLE IF NOT EXISTS {schema}.{table} (
-        DATE DATE,
-        WEATHERCODE INTEGER,
-        TEMPERATURE_2M_MAX FLOAT,
-        TEMPERATURE_2M_MIN FLOAT,
-        PRECIPITATION_SUM FLOAT,
-        LOAD_TS_UTC TIMESTAMP_TZ
-    )
-    """
-    merge_sql = f"""
-    MERGE INTO {schema}.{table} t
-    USING (
-        SELECT
-            :date_v::DATE        AS DATE,
-            :weathercode_v::INT  AS WEATHERCODE,
-            :tmax_v::FLOAT       AS TEMPERATURE_2M_MAX,
-            :tmin_v::FLOAT       AS TEMPERATURE_2M_MIN,
-            :precip_v::FLOAT     AS PRECIPITATION_SUM,
-            :load_ts_v::TIMESTAMP_TZ AS LOAD_TS_UTC
-    ) s
-    ON t.DATE = s.DATE
-    WHEN MATCHED THEN UPDATE SET
-        WEATHERCODE = s.WEATHERCODE,
-        TEMPERATURE_2M_MAX = s.TEMPERATURE_2M_MAX,
-        TEMPERATURE_2M_MIN = s.TEMPERATURE_2M_MIN,
-        PRECIPITATION_SUM = s.PRECIPITATION_SUM,
-        LOAD_TS_UTC = s.LOAD_TS_UTC
-    WHEN NOT MATCHED THEN INSERT (
-        DATE, WEATHERCODE, TEMPERATURE_2M_MAX, TEMPERATURE_2M_MIN, PRECIPITATION_SUM, LOAD_TS_UTC
-    ) VALUES (
-        s.DATE, s.WEATHERCODE, s.TEMPERATURE_2M_MAX, s.TEMPERATURE_2M_MIN, s.PRECIPITATION_SUM, s.LOAD_TS_UTC
-    )
-    """
+    from sqlalchemy import text
+    from snowflake.connector.pandas_tools import write_pandas
 
-    with eng.begin() as cxn:
-        cxn.execute(text(create_sql))
-        cxn.execute(
-            text(merge_sql),
-            {
-                "date_v": date_v,
-                "weathercode_v": weathercode_v,
-                "tmax_v": tmax_v,
-                "tmin_v": tmin_v,
-                "precip_v": precip_v,
-                "load_ts_v": load_ts_v,
-            },
+    conn = eng.raw_connection()
+    try:
+        cur = conn.cursor()
+        cur.execute(f"""
+            CREATE TABLE IF NOT EXISTS {schema}.{table} (
+                DATE DATE,
+                WEATHERCODE INTEGER,
+                TEMPERATURE_2M_MAX FLOAT,
+                TEMPERATURE_2M_MIN FLOAT,
+                PRECIPITATION_SUM FLOAT,
+                LOAD_TS_UTC TIMESTAMP_TZ
+            )
+        """)
+        cur.execute(f"CREATE OR REPLACE TEMPORARY TABLE {schema}.{tmp} LIKE {schema}.{table}")
+
+        stage_df = pd.DataFrame(
+            [{
+                "DATE": date_v,
+                "WEATHERCODE": weathercode_v,
+                "TEMPERATURE_2M_MAX": tmax_v,
+                "TEMPERATURE_2M_MIN": tmin_v,
+                "PRECIPITATION_SUM": precip_v,
+                "LOAD_TS_UTC": load_ts_v,
+            }]
         )
+
+        success, _, nrows, _ = write_pandas(
+            conn=conn,
+            df=stage_df,
+            table_name=tmp,
+            schema=schema,
+            auto_create_table=False,
+            overwrite=True,
+            use_logical_type=True,
+        )
+        if not success or nrows != 1:
+            raise RuntimeError("Failed to stage row")
+
+        cur.execute(f"""
+            MERGE INTO {schema}.{table} t
+            USING {schema}.{tmp} s
+            ON t.DATE = s.DATE
+            WHEN MATCHED THEN UPDATE SET
+              WEATHERCODE = s.WEATHERCODE,
+              TEMPERATURE_2M_MAX = s.TEMPERATURE_2M_MAX,
+              TEMPERATURE_2M_MIN = s.TEMPERATURE_2M_MIN,
+              PRECIPITATION_SUM = s.PRECIPITATION_SUM,
+              LOAD_TS_UTC = s.LOAD_TS_UTC
+            WHEN NOT MATCHED THEN INSERT (
+              DATE, WEATHERCODE, TEMPERATURE_2M_MAX, TEMPERATURE_2M_MIN, PRECIPITATION_SUM, LOAD_TS_UTC
+            ) VALUES (
+              s.DATE, s.WEATHERCODE, s.TEMPERATURE_2M_MAX, s.TEMPERATURE_2M_MIN, s.PRECIPITATION_SUM, s.LOAD_TS_UTC
+            )
+        """)
+        cur.execute(f"DROP TABLE IF EXISTS {schema}.{tmp}")
+        conn.commit()
+    finally:
+        conn.close()
 
     context.log.info(f"Upserted 1 row into {schema}.{table}.")
