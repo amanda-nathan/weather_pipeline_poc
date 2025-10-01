@@ -44,7 +44,8 @@ def raw_boston_weather(context: AssetExecutionContext):
         return
 
     df.columns = [c.upper() for c in df.columns]
-    df["LOAD_TS_UTC"] = pd.Timestamp.utcnow().tz_localize("UTC")
+    df["LOAD_TS_UTC"] = pd.Timestamp.now(tz="UTC")  # <-- fixed
+
     context.log.info(f"Prepared {len(df)} row(s) for {today_local}.")
 
     with engine.begin() as cxn:
