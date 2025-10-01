@@ -29,6 +29,7 @@ def raw_boston_weather(context: AssetExecutionContext):
         "longitude": lon,
         "daily": "weathercode,temperature_2m_max,temperature_2m_min,precipitation_sum",
         "timezone": tz,
+        "forecast_days": 1,
     }
     resp = requests.get(url, params=params, timeout=30)
     resp.raise_for_status()
@@ -38,13 +39,13 @@ def raw_boston_weather(context: AssetExecutionContext):
     df["date"] = pd.to_datetime(df["date"]).dt.date
     today_local = datetime.now(ZoneInfo(tz)).date()
     df = df[df["date"] == today_local]
-
     if df.empty:
         context.log.info("No data for today; skipping.")
         return
 
     df.columns = [c.upper() for c in df.columns]
     df["LOAD_TS_UTC"] = pd.Timestamp.utcnow().tz_localize("UTC")
+    context.log.info(f"Prepared {len(df)} row(s) for {today_local}.")
 
     with engine.begin() as cxn:
         cxn.execute(text(f"""
@@ -70,7 +71,7 @@ def raw_boston_weather(context: AssetExecutionContext):
 
     conn = engine.raw_connection()
     try:
-        success, _, nrows, _ = write_pandas(
+        success, _, _, _ = write_pandas(
             conn=conn,
             df=df,
             table_name=tmp,
@@ -80,7 +81,6 @@ def raw_boston_weather(context: AssetExecutionContext):
         )
     finally:
         conn.close()
-
     if not success:
         raise RuntimeError("Failed to write to temp table")
 
@@ -102,4 +102,4 @@ def raw_boston_weather(context: AssetExecutionContext):
             )
         """))
 
-    context.log.info(f"Upserted {len(df)} row(s) for {today_local} into {schema}.{table}.")
+    context.log.info(f"Upserted 1 row into {schema}.{table}.")
